@@ -1,0 +1,38 @@
+spec_version: 1.0
+
+environment_name: "Institutional_LOB_Execution"
+
+description: |
+  A real-world Limit Order Book simulator testing an agent's ability to execute
+  large block trades while minimizing market impact and Implementation Shortfall.
+  Features realistic market microstructure, multi-agent dynamics, and LLM-powered
+  decision making.
+
+tasks:
+  - id: "easy"
+    description: "Liquid market, stable prices. Minimal market impact. Baseline execution challenge."
+    config:
+      num_background_agents: 2
+      market_volatility: 0.05
+      time_limit_steps: 1000
+      
+  - id: "medium"
+    description: "Trending market with toxic momentum flow. Real-world market conditions. Requires intelligent decision-making."
+    config:
+      num_background_agents: 5
+      market_volatility: 0.15
+      time_limit_steps: 2000
+      
+  - id: "hard"
+    description: "High volatility flash-crash conditions with spoofing. Adversarial market. Ultimate execution challenge."
+    config:
+      num_background_agents: 10
+      market_volatility: 0.35
+      time_limit_steps: 3000
+      toxic_flow_enabled: true
+
+environment_config:
+  symbol: "AAPL"
+  initial_price: 150.0
+  initial_spread: 0.01
+  max_steps: 5000
