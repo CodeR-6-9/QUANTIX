@@ -1,131 +1,196 @@
-📈 QUANTIX: Institutional Limit Order Book Simulator
+# 📈 QUANTIX — Institutional Limit Order Book Simulator
 
-A production-grade Limit Order Book (LOB) simulator testing the ability of LLM Agents to execute massive block trades while minimizing market impact through High-Frequency microstructure strategies.
+A production-grade **Limit Order Book (LOB) simulator** designed to evaluate how LLM agents execute large block trades while minimizing market impact using high-frequency market microstructure strategies.
 
-Built for the OpenEnv Hackathon, this project evaluates Generative AI not on chat capabilities, but on its ability to navigate adversarial financial physics in real-time.
+Built for the **OpenEnv Hackathon**, QUANTIX shifts evaluation from conversational ability to **real-time decision-making under adversarial financial conditions**.
 
-🧠 The Core Problem: The Execution Dilemma
+---
 
-When an institutional trader needs to liquidate a $10M position, they cannot simply hit "Sell." They face a brutal triad of risks:
+## 🧠 Core Problem — The Execution Dilemma
 
-Timing Risk: Wait too long, and the market price moves against you.
-Market Impact: Execute too aggressively, and you wipe out liquidity, suffering massive slippage.
-Information Leakage: Show your hand, and high-frequency predators will front-run your orders.
+Institutional trade execution is constrained by three competing risks:
 
-The optimal strategy must balance passive quoting and aggressive sweeping. We measure this mathematically using Directional Implementation Shortfall (IS):
+* **Timing Risk** — Delayed execution exposes trades to adverse price movement
+* **Market Impact** — Aggressive execution consumes liquidity and increases slippage
+* **Information Leakage** — Revealing intent invites front-running by high-frequency traders
+
+The optimal strategy must dynamically balance **passive liquidity provision** and **aggressive execution**.
+
+### 📊 Evaluation Metric — Directional Implementation Shortfall (IS)
 
 $$
-\text{IS Score} = \max\left(0.0, 1.0 - \left( \frac{|\text{Agent VWAP} - \text{TWAP Benchmark}|}{\text{TWAP Benchmark}} \times 20 \right)\right)
+\text{IS Score} = \max\left(0.0,; 1.0 - \left(\frac{|\text{Agent VWAP} - \text{TWAP Benchmark}|}{\text{TWAP Benchmark}} \times 20\right)\right)
 $$
 
-Agents must dynamically adapt to order book depth, time decay, and retail noise to beat the passive benchmark.
+Agents are rewarded for outperforming a TWAP benchmark while adapting to:
 
-⚡ Architecture & Performance
+* Order book depth
+* Time decay
+* Stochastic retail order flow
 
-1. The Physics: Amortized $O(1)$ Order Matching
+---
 
-The core engine is a hyper-optimized market microstructure environment built entirely in Python.
+## ⚡ Architecture & Performance
 
-Self-Aware Pydantic Schemas: Native Price-Time Priority. Bids sort highest-to-lowest, Asks sort lowest-to-highest.
-$O(\log N)$ Greedy Matching: Binary heap data structures enable sub-millisecond market sweeps and partial fills.
-$O(1)$ Lazy Deletion: Order cancellations use tombstone markers, completely eliminating array-reconstruction memory leaks.
+### 1. Matching Engine — Market Microstructure Core
 
-2. The Ecosystem: Realistic Market Dynamics
+* **Amortized $O(1)$ operations** with optimized data handling
+* **$O(\log N)$ matching** using binary heaps
+* **$O(1)$ lazy deletion** via tombstone markers (no memory rebuilds)
 
-🟢 Market Maker: Provides continuous two-sided liquidity using a quote-and-update strategy with strict anti-fragmentation tick rounding.
-🟡 Noise Trader: Injects realistic retail chop, crossing the spread to guarantee volume and push the mid-price randomly.
-🤖 LLM Agent (Groq / HF / OpenAI): Observes the L2 order book, calculates pressure, and routes JSON-strict PASSIVE or AGGRESSIVE orders.
+#### Key Features
 
-📂 Repository Structure
+* Price-time priority enforced via **Pydantic schemas**
+* Efficient partial fills and sweeping
+* Sub-millisecond execution performance
 
-Plaintext
+---
 
+### 2. Market Ecosystem — Realistic Simulation
+
+* 🟢 **Market Maker**
+
+  * Provides continuous two-sided liquidity
+  * Uses spread-aware quoting with tick rounding
+
+* 🟡 **Noise Trader**
+
+  * Simulates retail activity
+  * Randomly crosses spreads to generate volume
+
+* 🤖 **LLM Agent (Groq / OpenAI / Hugging Face)**
+
+  * Observes L2 order book state
+  * Outputs structured **PASSIVE / AGGRESSIVE** actions
+
+---
+
+## 📂 Repository Structure
+
+```
 QUANTIX/
-├── core_engine/              # The Order Book Physics Engine
-│   ├── env.py                # LOBEnv: Step/Reset execution loop
-│   ├── schema.py             # Pydantic strictly-typed market models
-│   ├── matching_engine.py    # O(log N) Heaps & O(1) Lazy Deletion
-│   ├── grader.py             # Directional IS & VWAP scoring
-│   └── background_agents/    # Market Makers & Noise Traders
-├── agentic_llm/              # The AI Brain
-│   ├── client.py             # HF Router / Groq / OpenAI LLM wrapper
-│   ├── prompts.py            # Microstructure strategy & L2 state formatter
-│   └── logger.py             # Regex-compliant OpenEnv logging
-├── dashboard/                # The UI
-│   ├── app.py                # Streamlit institutional control panel
-│   └── visualizers.py        # Plotly L2 depth & trajectory charts
-└── tests/                    # 100% Coverage Test Suite
-├── test_schema.py        # Mathematical proofs for Price-Time priority
-├── test_matching.py      # Integration tests for partial fills/sweeps
-└── test_inference.py     # End-to-end OpenEnv pipeline verification
+├── core_engine/              # Order book engine
+│   ├── env.py                # Environment loop (step/reset)
+│   ├── schema.py             # Typed market models (Pydantic)
+│   ├── matching_engine.py    # Matching logic (heap-based)
+│   ├── grader.py             # IS + VWAP scoring
+│   └── background_agents/    # Market simulation agents
+│
+├── agentic_llm/              # LLM integration
+│   ├── client.py             # Model routing (Groq/OpenAI/HF)
+│   ├── prompts.py            # Strategy + state formatting
+│   └── logger.py             # OpenEnv-compliant logging
+│
+├── dashboard/                # Visualization layer
+│   ├── app.py                # Streamlit dashboard
+│   └── visualizers.py        # Plotly charts
+│
+└── tests/                    # Test suite (100% coverage)
+    ├── test_schema.py
+    ├── test_matching.py
+    └── test_inference.py
+```
 
-🚀 Setup & Quickstart
+---
 
-Prerequisites
+## 🚀 Setup & Quickstart
 
-Python 3.10+
-Groq, OpenAI, or Hugging Face API Key
+### Prerequisites
 
-1. Installation
+* Python **3.10+**
+* API key for one of:
 
-Bash
+  * Groq
+  * OpenAI
+  * Hugging Face
 
+---
+
+### 1. Installation
+
+```bash
 git clone https://github.com/CodeR-6-9/QUANTIX.git
 cd QUANTIX
 pip install -r requirements.txt
+```
 
-2. Environment Variables
+---
 
-Create a .env file in the root directory:
+### 2. Environment Configuration
 
-Code snippet
+Create a `.env` file:
 
+```env
 GROQ_API_KEY="gsk_..."
 
-# OPENAI_API_KEY="sk-..." (If using OpenAI instead)
+# Optional
+# OPENAI_API_KEY="sk-..."
 
 MODEL_NAME="llama-3.3-70b-versatile"
 API_BASE_URL="https://api.groq.com/openai/v1"
+```
 
-3. Run the Test Suite (Verification)
+---
 
-Ensure the physics engine and Pydantic schemas are mathematically sound:
+### 3. Run Tests (Validation)
 
-Bash
-
+```bash
 pytest tests/ -v
+```
 
-4. Run the CLI Pipeline (OpenEnv Validation)
+---
 
-Execute the inference pipeline to generate regex-compliant [START], [STEP], and [END] tags for the competition autograder.
+### 4. Run Inference Pipeline
 
-Bash
+Generates OpenEnv-compatible logs:
 
+```bash
 python inference.py
+```
 
-5. Launch the Institutional Dashboard
+---
 
-Boot up the Streamlit interface to visualize the LLM's trades, the L2 Order Book depth, and the VWAP vs. TWAP trajectory in real-time.
+### 5. Launch Dashboard
 
-Bash
-
+```bash
 streamlit run dashboard/app.py
+```
 
-📊 Task Difficulties
+---
 
-| Level     | Goal        | Time Limit | Pressure | Challenge                                                  |
-| --------- | ----------- | ---------- | -------- | ---------------------------------------------------------- |
-| Easy 🟢   | 500 Shares  | 100 Ticks  | Low      | Execute cleanly with minimal market impact                 |
-| Medium 🟡 | 1000 Shares | 20 Ticks   | High     | Balance severe time decay against spread crossing costs    |
-| Hard 🔴   | 5000 Shares | 25 Ticks   | Extreme  | Survive adversarial conditions and massive inventory panic |
+## 📊 Task Difficulty Levels
 
-🤝 Contributing
+| Level     | Target Size | Time Limit | Market Pressure | Description                      |
+| --------- | ----------- | ---------- | --------------- | -------------------------------- |
+| 🟢 Easy   | 500 shares  | 100 ticks  | Low             | Minimal impact execution         |
+| 🟡 Medium | 1000 shares | 20 ticks   | High            | Tradeoff: time vs cost           |
+| 🔴 Hard   | 5000 shares | 25 ticks   | Extreme         | Adversarial liquidity conditions |
 
-To build your own agent, implement the decide_action(state: AgentState) → AgentAction interface. The LOBEnv handles the routing, matching, and grading. Pull requests for new background agents (e.g., Mean-Reversion or Momentum traders) are welcome.
+---
 
-🤝 The Team
+## 🤝 Contributing
 
-Built with 💻 and ☕ by The Lost Tokens
-Hridesh • Apoorva
+To implement a custom agent:
 
-Developed for the Meta PyTorch OpenEnv Hackathon
+```python
+def decide_action(state: AgentState) -> AgentAction:
+    ...
+```
+
+* The environment handles execution, routing, and scoring
+* Contributions welcome:
+
+  * New trading strategies (momentum, mean-reversion, etc.)
+  * Improved execution policies
+  * Additional background agents
+
+---
+
+## 👥 Team
+
+**The Lost Tokens**
+
+* Hridesh
+* Apoorva
+
+Built with 💻 and ☕ for the **Meta PyTorch OpenEnv Hackathon**
