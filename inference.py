@@ -1,101 +1,103 @@
 """
 Main inference loop for OpenEnv LOB Simulator.
-
-This is the entry point executed by Hugging Face Docker container.
-Runs 3 tasks (easy/medium/hard) with LLM agent + LOBEnv.
-Outputs logs in exact format for validator regex parsing.
+PURE HUGGING FACE ROUTER VERSION - Audited for Regex Compliance.
 """
 
 import os
 import sys
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from dotenv import load_dotenv
+
+# Load local .env file
+load_dotenv()
 
 from core_engine.env import LOBEnv
 from core_engine.schema import AgentState, AgentAction
 from agentic_llm.client import LLMTrader
 from agentic_llm.logger import log_start, log_step, log_end
 
-
 def main() -> None:
-    """
-    Main execution: Run 3 difficulty tasks with LLM agent.
+    api_base_url = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
     
-    Environment Variables:
-    - API_BASE_URL: OpenAI API endpoint (default: https://api.openai.com/v1)
-    - MODEL_NAME: LLM model name (default: gpt-4-turbo)
-    - HF_TOKEN: API key from Hugging Face (used as api_key)
-    - OPENAI_API_KEY: Fallback if HF_TOKEN missing
+    model_name = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
     
-    Raises:
-        ValueError: If no API key provided
+    api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
     
-    Output Format (for validation):
-    [START] Episode initialized. Task Level: {task_level}.
-    [STEP] {step_num} | Action: {...} | Reward: {reward:.4f} | Info: {...}
-    [END] Episode complete. Final Score: {score:.4f} | Implementation Shortfall: {shortfall:.2f}.
-    """
+    # We update the environment variable so the logger.py picks up the correct model name
+    os.environ["MODEL_NAME"] = model_name
     
-    # Read configuration from environment
-    api_base_url: str = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-    model_name: str = os.getenv("MODEL_NAME", "gpt-4-turbo")
-    api_key: Optional[str] = os.getenv("HF_TOKEN")
-    
-    # Fallback to OPENAI_API_KEY if HF_TOKEN not set
     if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
-    
-    # Validate API key
-    if not api_key:
-        raise ValueError(
-            "No API key provided. Set HF_TOKEN or OPENAI_API_KEY environment variable."
-        )
-    
-    # Iterate through task levels
+        print("[DEBUG] CRITICAL: No API key provided (Set GROQ_API_KEY in .env)", flush=True)
+        return
+
+    # 2. ITERATE THROUGH TASKS
     for task_level in ["easy", "medium", "hard"]:
+        step_count: int = 0
+        rewards: List[float] = []
+        score: float = 0.0
+        success: bool = False
+        
         try:
-            # Initialize environment and agent for this task
-            env: LOBEnv = LOBEnv(task_level=task_level)
-            trader: LLMTrader = LLMTrader(
+            # Initialize environment and trader
+            env = LOBEnv(task_level=task_level)
+            trader = LLMTrader(
                 api_key=api_key,
                 model_name=model_name,
                 api_base_url=api_base_url
             )
             
-            # Log episode start
-            log_start(task_level)
+            # [START] tag - Logs the task and the hardcoded HF model
+            log_start(task=task_level, env="Institutional_LOB_Execution")
             
-            # Reset environment
-            state: AgentState = env.reset()
-            done: bool = False
-            step_count: int = 0
-            final_info: Dict[str, Any] = {}
+            state = env.reset()
+            done = False
+            final_info = {}
             
-            # Main simulation loop
             while not done:
-                # Get action from LLM trader
-                action: AgentAction = trader.decide_action(state)
+                error_msg = None
+                try:
+                    # Get decision from the LLM
+                    action = trader.decide_action(state)
+                except Exception as e:
+                    # STRICT CLEANING: Remove anything that could break a regex line
+                    error_msg = str(e).replace("\n", " ").replace("\r", " ").replace("|", "-")[:50]
+                    action = AgentAction(side="SELL", shares_to_execute=0, execution_style="PASSIVE")
                 
-                # Step environment
-                state, reward, done, info = env.step(action)
+                # Progress the physics
+                state, step_reward_obj, done, info = env.step(action)
+                
+                # REWARD EXTRACTION
+                if hasattr(step_reward_obj, 'total_reward'):
+                    reward_val = float(step_reward_obj.total_reward)
+                elif hasattr(step_reward_obj, 'reward'):
+                    reward_val = float(step_reward_obj.reward)
+                else:
+                    try: reward_val = float(step_reward_obj)
+                    except: reward_val = 0.0
+                
                 step_count += 1
-                final_info = info  # Keep final info for end logging
+                rewards.append(reward_val)
+                final_info = info 
                 
-                # Log step
-                log_step(step_count, action, reward, info)
+                # [STEP] tag
+                log_step(
+                    step=step_count, 
+                    action=action, 
+                    reward=reward_val, 
+                    done=done, 
+                    error=error_msg
+                )
             
-            # Extract final metrics from info dictionary
-            score: float = final_info.get("score", 0.0)
-            implementation_shortfall: float = final_info.get(
-                "implementation_shortfall", 0.0
-            )
+            # Final Metrics
+            score = float(final_info.get("score", 0.0))
+            success = bool(score > 0.0)
             
-            # Log episode end
-            log_end(score, implementation_shortfall)
+            # [END] tag
+            log_end(success=success, steps=step_count, score=score, rewards=rewards)
             
         except Exception as e:
-            print(f"[ERROR] Task {task_level} failed: {e}")
-            raise
-
+            # Emergency log to ensure we never miss an [END] tag
+            log_end(success=False, steps=step_count, score=0.0, rewards=rewards)
 
 if __name__ == "__main__":
     main()

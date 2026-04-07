@@ -55,7 +55,7 @@ class LOBEnv:
         Initialize LOBEnv with specified difficulty level.
         
         Args:
-            task_level: "easy" (50 shares, 15 steps) | "medium" (1000 shares, 20 steps) | "hard" (5000 shares, 25 steps)
+            task_level: "easy" (50 shares, 100 steps) | "medium" (1000 shares, 20 steps) | "hard" (5000 shares, 25 steps)
             symbol: Trading instrument (e.g., "AAPL")
             initial_mid_price: Starting mid-price for simulation
             
@@ -67,7 +67,7 @@ class LOBEnv:
         
         # Task configuration based on difficulty
         task_config: Dict[str, Tuple[int, int]] = {
-            "easy": (50, 15),           # (target_shares, max_steps)
+            "easy": (50, 100),          # FIXED: (target_shares, max_steps) updated to match openenv.yaml
             "medium": (1000, 20),
             "hard": (5000, 25)
         }
@@ -212,10 +212,11 @@ class LOBEnv:
                     execution_price = bid_price - 5.0
             else:  # "PASSIVE"
                 # Limit order: place at best price without aggressive move
+                # FIXED: Join the bid queue to buy, join the ask queue to sell.
                 if action.side == "BUY":
-                    execution_price = ask_price
-                else:  # SELL
                     execution_price = bid_price
+                else:  # SELL
+                    execution_price = ask_price
             
             # Create Order object for agent
             from uuid import uuid4

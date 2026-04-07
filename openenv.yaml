@@ -1,38 +1,49 @@
-spec_version: 1.0
+# filepath: openenv.yaml
+spec_version: "1.0"
 
 environment_name: "Institutional_LOB_Execution"
 
 description: |
-  A real-world Limit Order Book simulator testing an agent's ability to execute
-  large block trades while minimizing market impact and Implementation Shortfall.
-  Features realistic market microstructure, multi-agent dynamics, and LLM-powered
-  decision making.
+  A high-fidelity Limit Order Book (LOB) simulator designed for institutional 
+  trade execution research. Features an O(log N) Price-Time Priority matching 
+  engine, multi-agent liquidity dynamics (Market Makers, Noise Traders), and 
+  stochastic toxic flow. Evaluates agents on Implementation Shortfall (IS) 
+  against a TWAP benchmark.
 
 tasks:
   - id: "easy"
-    description: "Liquid market, stable prices. Minimal market impact. Baseline execution challenge."
+    description: "Liquid market with stable price action. Ideal for baseline execution testing."
     config:
       num_background_agents: 2
       market_volatility: 0.05
-      time_limit_steps: 1000
+      max_steps: 100
+      inventory_to_liquidate: 500
       
   - id: "medium"
-    description: "Trending market with toxic momentum flow. Real-world market conditions. Requires intelligent decision-making."
+    description: "Trending market with increased volatility and momentum-driven background flow."
     config:
       num_background_agents: 5
       market_volatility: 0.15
-      time_limit_steps: 2000
+      max_steps: 150
+      inventory_to_liquidate: 1000
       
   - id: "hard"
-    description: "High volatility flash-crash conditions with spoofing. Adversarial market. Ultimate execution challenge."
+    description: "Flash-crash conditions with toxic flow and high adverse selection risk."
     config:
       num_background_agents: 10
       market_volatility: 0.35
-      time_limit_steps: 3000
+      max_steps: 200
+      inventory_to_liquidate: 2000
       toxic_flow_enabled: true
 
 environment_config:
-  symbol: "AAPL"
-  initial_price: 150.0
-  initial_spread: 0.01
-  max_steps: 5000
+  symbol: "LOB-SIM"
+  initial_price: 100.0
+  tick_size: 0.01
+  matching_engine: "price-time-priority"
+  grading_metric: "implementation_shortfall"
+
+# Metadata for OpenEnv Validator
+version: "1.0.0"
+license: "MIT"
+tags: ["finance", "trading", "lob", "execution-optimization"]

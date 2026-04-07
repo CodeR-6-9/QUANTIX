@@ -1,59 +1,50 @@
 """
 Structured logging for trading activity.
 
-This module provides logging utilities for tracking agent actions,
-observations, and rewards in a standardized format required by OpenEnv validators.
-
-Strict format: Judges' regex parser relies entirely on these formats.
+STRICT FORMAT: Must perfectly match OpenEnv regex parser.
+DO NOT add spaces, pipes, or conversational text.
 """
 
-from typing import Dict, Any
-import json
-
+import os
+from typing import Optional, List
 from core_engine.schema import AgentAction
 
-
-def log_start(task_level: str) -> None:
+def log_start(task: str, env: str = "Institutional_LOB_Execution") -> None:
     """
-    Log episode start with task level.
-    
-    Prints exactly: [START] Episode initialized. Task Level: {task_level}.
-    
-    Args:
-        task_level: Task difficulty level (easy/medium/hard)
+    Log episode start.
+    Required format: [START] task=<task_name> env=<benchmark> model=<model_name>
     """
-    print(f"[START] Episode initialized. Task Level: {task_level}.")
-
+    model = os.getenv("MODEL_NAME", "gpt-4-turbo")
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 def log_step(
-    step_num: int,
-    action: AgentAction,
-    reward: float,
-    info: Dict[str, Any]
+    step: int, 
+    action: AgentAction, 
+    reward: float, 
+    done: bool, 
+    error: Optional[str] = None
 ) -> None:
     """
-    Log a single step with exact format for validation.
-    
-    Prints exactly: [STEP] {step_num} | Action: {action.model_dump_json()} | Reward: {reward:.4f} | Info: {info}
-    
-    Args:
-        step_num: Step counter (1-based)
-        action: AgentAction taken by LLM
-        reward: Reward value from env.step()
-        info: Info dictionary from env.step()
+    Log a single step.
+    Required format: [STEP] step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
     """
-    action_json = action.model_dump_json()
-    print(f"[STEP] {step_num} | Action: {action_json} | Reward: {reward:.4f} | Info: {info}")
+    # Compact JSON to remove spaces that break regex
+    action_str = action.model_dump_json().replace(" ", "") 
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    
+    print(
+        f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_val} error={error_val}", 
+        flush=True
+    )
 
-
-def log_end(score: float, shortfall: float) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     """
-    Log episode completion with final metrics.
-    
-    Prints exactly: [END] Episode complete. Final Score: {score:.4f} | Implementation Shortfall: {shortfall:.2f}.
-    
-    Args:
-        score: Final episode score
-        shortfall: Implementation Shortfall value
+    Log episode completion.
+    Required format: [END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
     """
-    print(f"[END] Episode complete. Final Score: {score:.4f} | Implementation Shortfall: {shortfall:.2f}.")
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", 
+        flush=True
+    )
