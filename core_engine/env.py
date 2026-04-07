@@ -197,36 +197,38 @@ class LOBEnv:
             ask_price = self.initial_mid_price + 1.0
         current_mid_price = (bid_price + ask_price) / 2.0
         
-        # ========== PHASE 2: LLM AGENT ACTION ==========
+# ========== PHASE 2: LLM AGENT ACTION ==========
         step_trades: list[Trade] = []  # Trades executed in this step
         step_reward: float = 0.0       # Slippage penalty for this step
         
-        if action.shares_to_execute > 0:
+        # 1. FAT FINGER PROTECTION: Bound the requested shares by remaining inventory
+        actual_shares = min(action.shares_to_execute, self.inventory_remaining)
+        
+        if actual_shares > 0:
             # Determine execution price based on style
             if action.execution_style == "AGGRESSIVE":
                 # Market order: cross spread to guarantee immediate fill
-                # BUY @ (best_ask + 5.0), SELL @ (best_bid - 5.0)
+                # STRICT ROUNDING applied to prevent float fragmentation
                 if action.side == "BUY":
-                    execution_price = ask_price + 5.0
+                    execution_price = round(ask_price + 0.50, 2) # Sweep up to 50 cents
                 else:  # SELL
-                    execution_price = bid_price - 5.0
+                    execution_price = round(bid_price - 0.50, 2)
             else:  # "PASSIVE"
                 # Limit order: place at best price without aggressive move
-                # FIXED: Join the bid queue to buy, join the ask queue to sell.
                 if action.side == "BUY":
-                    execution_price = bid_price
+                    execution_price = round(bid_price, 2)
                 else:  # SELL
-                    execution_price = ask_price
+                    execution_price = round(ask_price, 2)
             
             # Create Order object for agent
             from uuid import uuid4
-            agent_order_id = f"AGENT_{uuid4().hex[:8]}"
+            agent_order_id = f"AGENT_{uuid4().hex[:5]}"
             from .schema import Order
             agent_order = Order(
                 order_id=agent_order_id,
                 side=action.side,
                 price=execution_price,
-                quantity=action.shares_to_execute,
+                quantity=actual_shares, # Use bounded shares here!
                 timestamp=self.current_time,
                 agent_id="LLM-AGENT"
             )

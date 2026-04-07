@@ -1,101 +1,100 @@
 """
-Tests for inference pipeline.
+Tests for the OpenEnv inference pipeline.
 
-Test cases for end-to-end inference and environment interaction.
+Verifies the integration between LOBEnv task configurations,
+step progression, episode termination, and regex-compliant logging.
 """
 
 import pytest
-import os
-from unittest.mock import Mock, patch
-
 from core_engine.env import LOBEnv
-from core_engine.schema import AgentState, AgentAction
-from agentic_llm.logger import log_step, log_episode_summary
+from core_engine.schema import AgentState, AgentAction, StepReward
+from agentic_llm.logger import log_start, log_step, log_end
 
+# ==========================================
+# 1. ENVIRONMENT CONFIGURATION TESTS
+# ==========================================
 
-def test_environment_initializes() -> None:
-    """Test that LOB environment initializes correctly."""
-    env = LOBEnv()
+def test_environment_task_loading() -> None:
+    """Test that LOBEnv loads the correct openenv.yaml parameters."""
+    # Test Easy config
+    env_easy = LOBEnv(task_level="easy")
+    assert env_easy.target_shares == 500
+    assert env_easy.max_steps == 100
     
-    assert env.symbol == "AAPL"
-    assert env.cash == 100000.0
-    assert env.step_count == 0
-
+    # Test Fallback (invalid task should default to medium/fallback)
+    env_invalid = LOBEnv(task_level="super_hard_mode")
+    assert getattr(env_invalid, 'target_shares', None) is not None
 
 def test_environment_reset() -> None:
-    """Test environment reset functionality."""
-    env = LOBEnv()
+    """Test environment reset returns strict AgentState."""
+    env = LOBEnv(task_level="easy")
     state = env.reset()
     
     assert isinstance(state, AgentState)
-    assert state.step == 0
+    assert state.time_remaining == 100
+    assert state.inventory_remaining == 500
     assert env.step_count == 0
 
+# ==========================================
+# 2. STEP EXECUTION & TERMINATION TESTS
+# ==========================================
 
-def test_environment_step() -> None:
-    """Test environment step with HOLD action."""
-    env = LOBEnv(max_steps=10)
-    state = env.reset()
+def test_environment_step_execution() -> None:
+    """Test environment step updates inventory and time correctly."""
+    env = LOBEnv(task_level="easy")
+    env.reset()
     
     action = AgentAction(
-        action_type="HOLD",
-        symbol="AAPL"
+        side="BUY",
+        shares_to_execute=50,
+        execution_style="AGGRESSIVE"
     )
     
-    next_state, reward, done = env.step(action)
+    next_state, reward, done, info = env.step(action)
     
     assert isinstance(next_state, AgentState)
-    assert next_state.step == 1
-    assert done is False  # Not done after 1 step with max_steps=10
+    assert next_state.time_remaining == 99  # Time decreased
+    assert next_state.inventory_remaining == 450  # Inventory decreased
+    assert isinstance(reward, StepReward)
+    assert done is False
 
-
-def test_step_logging() -> None:
-    """Test step logging output."""
-    # Create mock objects
+def test_environment_termination_and_scoring() -> None:
+    """Test episode completes when inventory hits 0 and calculates score."""
+    env = LOBEnv(task_level="easy")
+    env.reset()
+    
+    # Force complete execution in one step (Fat finger simulated)
     action = AgentAction(
-        action_type="BUY",
-        symbol="AAPL",
-        quantity=100.0,
-        price=150.0
+        side="BUY",
+        shares_to_execute=500, # Matches full target_shares
+        execution_style="AGGRESSIVE"
     )
     
-    market_state = Mock()
-    market_state.symbol = "AAPL"
-    market_state.current_price = 150.0
-    market_state.bid_price = 149.99
-    market_state.ask_price = 150.01
+    next_state, reward, done, info = env.step(action)
     
-    observation = Mock(spec=AgentState)
-    observation.market_state = market_state
+    assert next_state.inventory_remaining == 0
+    assert done is True
+    assert "score" in info  # Grader should have triggered
+    assert isinstance(info["score"], float)
+
+# ==========================================
+# 3. LOGGER SIGNATURE TESTS
+# ==========================================
+
+def test_logging_signatures() -> None:
+    """
+    Test that the logger functions do not throw TypeErrors when passed 
+    the updated Pydantic models. We don't need to test stdout, just the signatures.
+    """
+    action = AgentAction(side="SELL", shares_to_execute=10, execution_style="PASSIVE")
     
-    reward = Mock(spec=object)
-    reward.total_reward = 0.05
-    
-    # This should not raise an exception
-    log_step(action, observation, reward, step_number=1)
-
-
-def test_episode_summary_logging() -> None:
-    """Test episode summary logging."""
-    # This should not raise an exception
-    log_episode_summary(
-        episode_number=1,
-        total_steps=100,
-        total_reward=5.0,
-        final_pnl=250.0,
-        trades_executed=25,
-        avg_slippage=0.002
-    )
-
-
-class TestInferenceFlow:
-    """Test complete inference flow."""
-    
-    def test_inference_initialization(self) -> None:
-        """Test inference module initialization."""
-        # TODO: Test inference.py initialization
-        assert True
-
+    # These should execute without raising exceptions
+    try:
+        log_start(task="easy", env="Institutional_LOB")
+        log_step(step=1, action=action, reward=-0.05, done=False, error=None)
+        log_end(success=True, steps=1, score=0.95, rewards=[-0.05])
+    except Exception as e:
+        pytest.fail(f"Logger functions raised an unexpected exception: {e}")
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

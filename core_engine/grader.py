@@ -1,16 +1,9 @@
 """
 Performance grading and evaluation metrics for execution quality.
 
-This module implements Implementation Shortfall (IS) scoring, which measures
-execution quality relative to a TWAP (Time-Weighted Average Price) benchmark.
-The scoring function maps execution shortfall to a 0.0-1.0 performance score.
-
-Key Concepts:
-  - Benchmark Price: Simple average of start and end mid-prices (naive TWAP)
-  - Benchmark Revenue: target_shares * benchmark_price (perfect execution)
-  - Agent Revenue: sum(trade.price * trade.quantity) for executed trades
-  - Implementation Shortfall: Benchmark Revenue - Agent Revenue
-  - Score Mapping: shortfall -> score with penalties for incomplete execution
+Implements a Directional Implementation Shortfall (IS) scoring mechanism.
+Compares the Agent's Volume-Weighted Average Price (VWAP) against the 
+Time-Weighted Average Price (TWAP) benchmark.
 """
 
 from typing import List
@@ -20,18 +13,7 @@ from .schema import Trade
 def calculate_twap(initial_mid_price: float, final_mid_price: float) -> float:
     """
     Calculate Time-Weighted Average Price benchmark.
-    
-    For simplicity, TWAP is the arithmetic mean of initial and final mid-prices.
-    This represents a passive benchmark where the agent does nothing.
-    
-    Args:
-        initial_mid_price: Starting mid-price (best_bid + best_ask) / 2
-        final_mid_price: Ending mid-price after simulation
-        
-    Returns:
-        TWAP benchmark price (float)
-    
-    Complexity: O(1)
+    Represents a passive, zero-intelligence execution benchmark.
     """
     return (initial_mid_price + final_mid_price) / 2.0
 
@@ -42,67 +24,50 @@ def calculate_score(
     benchmark_price: float
 ) -> float:
     """
-    Calculate execution quality score based on Implementation Shortfall.
+    Calculate execution quality score based on Directional Implementation Shortfall.
     
-    SCORE MAPPING:
-      - Score = 1.0 if shortfall <= 0 (better than benchmark)
-      - Score = 0.9 - (shortfall / benchmark_revenue) (linearly penalize)
-      - Score = 0.0 if agent failed to execute all target_shares (harsh penalty)
-    
-    Implementation Shortfall (IS):
-      - IS = |AgentCost - BenchmarkCost|
-      - For BUY: AgentCost = sum(price * qty), BenchmarkCost = total_shares * benchmark_price
-      - IS> 0 means agent paid more (or received less for SELL)
-    
-    Args:
-        agent_trades: List of Trade objects executed by LLM agent
-        total_target_shares: Total shares agent needed to execute
-        benchmark_price: TWAP benchmark price (from calculate_twap)
-        
-    Returns:
-        Score in range [0.0, 1.0] where 1.0 is perfect execution
-    
-    Raises:
-        ValueError: If total_target_shares <= 0 or benchmark_price <= 0
-    
-    Complexity: O(N) where N = len(agent_trades)
+    Grading Rules:
+    1. Incomplete execution = 0.0 (Severe penalty for failing the mandate)
+    2. Beating the benchmark (Negative IS) = 1.0
+    3. Missing the benchmark scales down linearly. A 5% slippage results in 0.0.
     """
-    if total_target_shares <= 0 or benchmark_price <= 0:
-        raise ValueError("total_target_shares and benchmark_price must be positive")
-    
-    # PHASE 1: Calculate actual execution
-    # =====================================
-    total_executed_shares = sum(trade.quantity for trade in agent_trades)
-    total_agent_revenue = sum(trade.price * trade.quantity for trade in agent_trades)
-    
-    # PHASE 2: Check for incomplete execution (SEVERE PENALTY)
-    # ========================================================
-    if total_executed_shares < total_target_shares:
-        # Agent failed to execute all shares by end of episode
-        # Return 0.0 as maximum penalty
+    if total_target_shares <= 0 or benchmark_price <= 0 or not agent_trades:
         return 0.0
-    
-    # PHASE 3: Calculate Implementation Shortfall
-    # ============================================
-    # Benchmark: what agent would earn/pay with perfect execution at TWAP
-    benchmark_revenue = total_target_shares * benchmark_price
-    
-    # Shortfall: how much agent lost relative to benchmark (always positive or zero)
-    # For execution with average price paid, if agent paid more than benchmark, IS > 0
-    shortfall = abs(total_agent_revenue - benchmark_revenue)
-    
-    # PHASE 4: Map shortfall to score [0.0, 1.0]
-    # ============================================
-    if shortfall <= 0.01:  # Near-zero shortfall (within 1 cent)
-        # Agent achieved benchmark-matching or better execution
-        score = 1.0
+
+    # 1. Verification Phase: Did the agent finish the job?
+    total_executed_shares = sum(trade.quantity for trade in agent_trades)
+    if total_executed_shares < total_target_shares:
+        return 0.0
+
+    # 2. Directional Phase: Is the agent buying or selling?
+    agent_bought = sum(t.quantity for t in agent_trades if t.buyer_id == "LLM-AGENT")
+    agent_sold = sum(t.quantity for t in agent_trades if t.seller_id == "LLM-AGENT")
+    is_buy_task = agent_bought >= agent_sold
+
+    # 3. Execution Phase: Calculate Agent's VWAP
+    total_volume = agent_bought + agent_sold
+    total_dollars = sum(t.price * t.quantity for t in agent_trades)
+    agent_vwap = total_dollars / total_volume if total_volume > 0 else 0.0
+
+    # 4. Shortfall Phase: Directional calculation
+    if is_buy_task:
+        # BUYING: Shortfall is positive (bad) if Agent paid MORE than TWAP
+        shortfall_per_share = agent_vwap - benchmark_price
     else:
-        # Linearly penalize based on IS as percentage of benchmark revenue
-        # - 1% IS = 0.99 score
-        # - 5% IS = 0.95 score
-        # - 10% IS = 0.90 score
-        # - 100% IS or more = 0.0 score
-        is_percentage = shortfall / benchmark_revenue if benchmark_revenue > 0 else 1.0
-        score = max(0.0, 1.0 - is_percentage)
+        # SELLING: Shortfall is positive (bad) if Agent received LESS than TWAP
+        shortfall_per_share = benchmark_price - agent_vwap
+
+    # 5. Scoring Phase
+    if shortfall_per_share <= 0:
+        # The agent beat or perfectly matched the benchmark!
+        return 1.0
+
+    # Convert shortfall to a percentage of the benchmark
+    shortfall_pct = shortfall_per_share / benchmark_price
+
+    # Institutional Scaling: 
+    # Multiply by 20 means a 5% deviation from benchmark drops the score to 0.0.
+    # This enforces strict execution standards.
+    score = max(0.0, 1.0 - (shortfall_pct * 20))
     
-    return score
+    return round(score, 4)
