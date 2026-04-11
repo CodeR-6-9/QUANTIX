@@ -56,7 +56,7 @@ class Trade(BaseModel):
 
 class AgentState(BaseModel):
     """
-    Observation state provided to the Groq LLM agent at each step.
+    Observation state provided to the LLM agent at each step.
     Strictly formatted to minimize token count while maximizing L2 context.
     """
     time_remaining: int = Field(..., description="Steps remaining until episode termination")
@@ -69,6 +69,16 @@ class AgentState(BaseModel):
     asks: List[Tuple[float, int]] = Field(
         ..., 
         description="Top 3 ask levels: [(price, quantity), ...]"
+    )
+    
+    # --- HYBRID NLP STATE FIELDS ---
+    market_shape: str = Field(
+        default="BALANCED",
+        description="Semantic NLP description of order book imbalance and liquidity walls."
+    )
+    compliance_mandate: str = Field(
+        default="Standard execution.",
+        description="Text-based institutional rules you MUST follow this episode."
     )
 
 

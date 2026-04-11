@@ -24,25 +24,26 @@ def calculate_score(
     agent_trades: List[Trade],
     total_target_shares: int,
     arrival_price: float,
-    continuous_twap: float,
-    steps_taken: int,
-    max_steps: int
+    true_twap: float,
+    max_steps: int,
+    steps_taken: int
 ) -> float:
     """
     Calculate execution quality score using a Multi-Factor Implementation Shortfall.
     
     Grading Rules:
-    1. Incomplete execution = 0.0 (Severe penalty for failing the mandate)
+    1. Incomplete execution = 0.001 (Severe penalty for failing the mandate)
     2. Blended Benchmark = 50% Arrival Price + 50% Continuous TWAP
     3. Timing Penalty = Up to 10% score reduction for holding risk too long.
     """
+    # OpenEnv Strict Bounds Lock
     if total_target_shares <= 0 or arrival_price <= 0 or not agent_trades:
-        return 0.0
+        return 0.001
 
     # 1. Verification Phase: Did the agent finish the job?
     total_executed_shares = sum(trade.quantity for trade in agent_trades)
     if total_executed_shares < total_target_shares:
-        return 0.0
+        return 0.001
 
     # 2. Directional Phase: Is the agent buying or selling?
     agent_bought = sum(t.quantity for t in agent_trades if t.buyer_id == "LLM-AGENT")
@@ -55,7 +56,7 @@ def calculate_score(
     agent_vwap = total_dollars / total_volume if total_volume > 0 else 0.0
 
     # 4. Multi-Factor Benchmark Phase
-    blended_benchmark = (arrival_price * 0.5) + (continuous_twap * 0.5)
+    blended_benchmark = (arrival_price * 0.5) + (true_twap * 0.5)
 
     # 5. Shortfall Phase: Directional calculation
     if is_buy_task:
@@ -81,4 +82,5 @@ def calculate_score(
     
     final_score = base_score * time_penalty_factor
     
-    return round(final_score, 4)
+    # STRICT OPENENV VALIDATOR LOCK (Never return 0.0 or 1.0)
+    return max(0.001, min(0.999, round(final_score, 4)))
