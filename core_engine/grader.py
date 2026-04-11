@@ -1,37 +1,42 @@
 """
 Performance grading and evaluation metrics for execution quality.
 
-Implements a Directional Implementation Shortfall (IS) scoring mechanism.
-Compares the Agent's Volume-Weighted Average Price (VWAP) against the 
-Time-Weighted Average Price (TWAP) benchmark.
+Implements an Institutional Multi-Factor Scoring mechanism.
+Evaluates the Agent's VWAP against a blended benchmark of Arrival Price
+and Continuous TWAP, while applying strict penalties for Timing Risk.
 """
 
 from typing import List
 from .schema import Trade
 
 
-def calculate_twap(initial_mid_price: float, final_mid_price: float) -> float:
+def calculate_continuous_twap(price_history: List[float]) -> float:
     """
-    Calculate Time-Weighted Average Price benchmark.
-    Represents a passive, zero-intelligence execution benchmark.
+    Calculate the true Continuous Time-Weighted Average Price.
+    Represents the integral of the market price over the execution window.
     """
-    return (initial_mid_price + final_mid_price) / 2.0
+    if not price_history:
+        return 0.0
+    return sum(price_history) / len(price_history)
 
 
 def calculate_score(
     agent_trades: List[Trade],
     total_target_shares: int,
-    benchmark_price: float
+    arrival_price: float,
+    continuous_twap: float,
+    steps_taken: int,
+    max_steps: int
 ) -> float:
     """
-    Calculate execution quality score based on Directional Implementation Shortfall.
+    Calculate execution quality score using a Multi-Factor Implementation Shortfall.
     
     Grading Rules:
     1. Incomplete execution = 0.0 (Severe penalty for failing the mandate)
-    2. Beating the benchmark (Negative IS) = 1.0
-    3. Missing the benchmark scales down linearly. A 5% slippage results in 0.0.
+    2. Blended Benchmark = 50% Arrival Price + 50% Continuous TWAP
+    3. Timing Penalty = Up to 10% score reduction for holding risk too long.
     """
-    if total_target_shares <= 0 or benchmark_price <= 0 or not agent_trades:
+    if total_target_shares <= 0 or arrival_price <= 0 or not agent_trades:
         return 0.0
 
     # 1. Verification Phase: Did the agent finish the job?
@@ -49,25 +54,31 @@ def calculate_score(
     total_dollars = sum(t.price * t.quantity for t in agent_trades)
     agent_vwap = total_dollars / total_volume if total_volume > 0 else 0.0
 
-    # 4. Shortfall Phase: Directional calculation
+    # 4. Multi-Factor Benchmark Phase
+    blended_benchmark = (arrival_price * 0.5) + (continuous_twap * 0.5)
+
+    # 5. Shortfall Phase: Directional calculation
     if is_buy_task:
-        # BUYING: Shortfall is positive (bad) if Agent paid MORE than TWAP
-        shortfall_per_share = agent_vwap - benchmark_price
+        # BUYING: Shortfall is positive (bad) if Agent paid MORE than benchmark
+        shortfall_per_share = agent_vwap - blended_benchmark
     else:
-        # SELLING: Shortfall is positive (bad) if Agent received LESS than TWAP
-        shortfall_per_share = benchmark_price - agent_vwap
+        # SELLING: Shortfall is positive (bad) if Agent received LESS than benchmark
+        shortfall_per_share = blended_benchmark - agent_vwap
 
-    # 5. Scoring Phase
+    # 6. Scoring Phase
     if shortfall_per_share <= 0:
-        # The agent beat or perfectly matched the benchmark!
-        return 1.0
+        base_score = 1.0 # The agent beat the benchmark!
+    else:
+        # Convert shortfall to a percentage of the benchmark
+        shortfall_pct = shortfall_per_share / blended_benchmark
+        # 5% deviation from benchmark drops the score to 0.0.
+        base_score = max(0.0, 1.0 - (shortfall_pct * 20))
 
-    # Convert shortfall to a percentage of the benchmark
-    shortfall_pct = shortfall_per_share / benchmark_price
-
-    # Institutional Scaling: 
-    # Multiply by 20 means a 5% deviation from benchmark drops the score to 0.0.
-    # This enforces strict execution standards.
-    score = max(0.0, 1.0 - (shortfall_pct * 20))
+    # 7. Timing Risk Penalty
+    # The longer it takes to execute, the more variance risk the portfolio took.
+    # Max penalty is 10% (0.1) if the agent uses all available max_steps.
+    time_penalty_factor = 1.0 - (0.1 * (steps_taken / max(1, max_steps)))
     
-    return round(score, 4)
+    final_score = base_score * time_penalty_factor
+    
+    return round(final_score, 4)

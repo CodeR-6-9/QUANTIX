@@ -2,7 +2,7 @@
 Limit Order Book environment implementing OpenAI Gym interface.
 
 This module provides the main LOBEnv simulation environment where:
-  1. The agent (LLM) observes market state (L2 order book, mid-price, inventory)
+  1. The agent (LLM) observes market state (L2 order book, micro-price, inventory)
   2. The agent submits trading action (shares_to_execute, execution_style)
   3. Background agents (MarketMaker, NoiseTrader) provide realistic liquidity
   4. The environment executes the agent's order against the LOB
@@ -12,13 +12,14 @@ Termination condition: Agent completes all target_shares or max_steps reached.
 """
 
 import time
+import math
 from typing import Tuple, Dict, Any
 
 from .schema import AgentState, AgentAction, StepReward, Trade
 from .matching_engine import LimitOrderBook
 from .background_agents.market_maker import MarketMaker
 from .background_agents.noise_trader import NoiseTrader
-from .grader import calculate_twap, calculate_score
+from .grader import calculate_continuous_twap, calculate_score
 
 
 class LOBEnv:
@@ -29,20 +30,6 @@ class LOBEnv:
     L2 market data and submitting limit/market orders. Background agents provide
     realistic liquidity. Episode ends when all target shares are executed or
     max_steps is reached.
-    
-    State Space:
-      - time_remaining: steps left in episode [0, max_steps]
-      - inventory_remaining: shares left to execute [0, target_shares]
-      - mid_price: current (best_bid + best_ask) / 2
-      - L2 data: top 3 bid/ask levels with quantities
-    
-    Action Space:
-      - shares_to_execute: int in [0, inventory_remaining]
-      - execution_style: "AGGRESSIVE" (market order) or "PASSIVE" (limit order)
-    
-    Reward:
-      - Negative slippage: per-execution (intermediate)
-      - Final score [0, 1]: based on Implementation Shortfall (terminal)
     """
     
     def __init__(
@@ -53,13 +40,6 @@ class LOBEnv:
     ) -> None:
         """
         Initialize LOBEnv with specified difficulty level.
-        
-        Args:
-            task_level: "easy" (50 shares, 100 steps) | "medium" (1000 shares, 20 steps) | "hard" (5000 shares, 25 steps)
-            symbol: Trading instrument (e.g., "AAPL")
-            initial_mid_price: Starting mid-price for simulation
-            
-        Complexity: O(1) initialization
         """
         self.symbol: str = symbol
         self.initial_mid_price: float = initial_mid_price
@@ -67,7 +47,7 @@ class LOBEnv:
         
         # Task configuration based on difficulty
         task_config: Dict[str, Tuple[int, int]] = {
-            "easy": (50, 100),          # FIXED: (target_shares, max_steps) updated to match openenv.yaml
+            "easy": (50, 100),
             "medium": (1000, 20),
             "hard": (5000, 25)
         }
@@ -91,29 +71,30 @@ class LOBEnv:
         )
         
         # Agent execution state
-        self.inventory_remaining: int = self.target_shares  # Shares left to execute
-        self.step_count: int = 0                            # Current step in episode
-        self.agent_trades: list[Trade] = []                # Trades executed by LLM agent
+        self.inventory_remaining: int = self.target_shares
+        self.step_count: int = 0
+        self.agent_trades: list[Trade] = []
         
         # Statistics and tracking
         self.episode_start_price: float = initial_mid_price
         self.episode_end_price: float = initial_mid_price
-    
+        self.price_history: list[float] = []  # Tracks integral of market price
+
+    def _calculate_micro_price(self, bid_price: float, bid_qty: int, ask_price: float, ask_qty: int) -> float:
+        """
+        Calculate Volume-Weighted Micro-Price based on Order Book Imbalance (OBI).
+        This provides a highly predictive true price compared to the naive mid-price.
+        """
+        total_volume = bid_qty + ask_qty
+        if total_volume > 0:
+            imbalance = bid_qty / total_volume
+            return (bid_price * (1.0 - imbalance)) + (ask_price * imbalance)
+        else:
+            # Fallback to naive mid if book is completely empty
+            return (bid_price + ask_price) / 2.0
+
     def reset(self) -> AgentState:
-        """
-        Reset the environment for a new episode.
-        
-        Procedure:
-          1. Clear order book
-          2. Reset counters (step_count=0, inventory=target_shares, agent_trades=[])
-          3. Pre-populate order book with background agent liquidity
-          4. Return initial observation
-        
-        Returns:
-            Initial AgentState observation for episode start
-        
-        Complexity: O(num_liquidity_steps) for pre-population
-        """
+        """Reset the environment for a new episode."""
         # Clear and reinitialize state
         self.lob = LimitOrderBook(self.symbol)
         self.market_maker = MarketMaker("MM-SIM", num_levels=3, spread_width=0.5, order_size=100)
@@ -125,9 +106,9 @@ class LOBEnv:
         self.agent_trades = []
         self.episode_start_price = self.initial_mid_price
         self.episode_end_price = self.initial_mid_price
+        self.price_history = []
         
         # PRE-POPULATION: Call market maker a few times to build initial liquidity
-        # so the agent doesn't start with an empty book
         for _ in range(3):
             mm_result = self.market_maker.step(self.initial_mid_price, self.current_time)
             for order in mm_result["new_orders"]:
@@ -140,81 +121,57 @@ class LOBEnv:
         self,
         action: AgentAction
     ) -> Tuple[AgentState, StepReward, bool, Dict[str, Any]]:
-        """
-        Execute one simulation step: background agents -> LLM agent -> matching -> reward.
-        
-        Execution Flow:
-          PHASE 1 (Background): Market maker and noise trader post/cancel orders
-          PHASE 2 (LLM Action): Convert AgentAction to Order, submit to LOB
-          PHASE 3 (Updates): Update inventory, advance time
-          PHASE 4 (Reward): Calculate slippage penalty; check done condition
-        
-        Args:
-            action: AgentAction with shares_to_execute (int) and execution_style ("AGGRESSIVE" or "PASSIVE")
-            
-        Returns:
-            next_state: AgentState observation after step
-            reward: StepReward with slippage penalty and done flag
-            done: True if episode terminated (all shares executed or time limit)
-            info: Dict with execution details, scores, and debugging info
-        
-        Complexity: O(log N) for matching, O(1) for reward calculation
-        """
         self.step_count += 1
-        self.current_time = float(self.step_count)  # Discrete time in steps
+        self.current_time = float(self.step_count)
         
         # ========== PHASE 1: BACKGROUND AGENTS ==========
-        # Get current market state before background orders
         bid_price, bid_qty, ask_price, ask_qty = self.lob.get_best_bid_ask()
         
-        # Handle case where book is empty
-        if bid_price is None:
-            bid_price = self.initial_mid_price - 1.0
-        if ask_price is None:
-            ask_price = self.initial_mid_price + 1.0
+        if bid_price is None: bid_price, bid_qty = self.initial_mid_price - 1.0, 0
+        if ask_price is None: ask_price, ask_qty = self.initial_mid_price + 1.0, 0
         
-        current_mid_price = (bid_price + ask_price) / 2.0
+        # Determine momentum via Micro-Price
+        current_micro_price = self._calculate_micro_price(bid_price, bid_qty, ask_price, ask_qty)
         
-        # Market maker updates quotes
-        mm_result = self.market_maker.step(current_mid_price, self.current_time)
-        for order_id in mm_result["cancels"]:
-            self.lob.cancel_order(order_id)
-        for order in mm_result["new_orders"]:
-            self.lob.add_order(order)
+        # Market maker and noise trader update quotes around the Micro-Price
+        mm_result = self.market_maker.step(current_micro_price, self.current_time)
+        for order_id in mm_result["cancels"]: self.lob.cancel_order(order_id)
+        for order in mm_result["new_orders"]: self.lob.add_order(order)
         
-        # Noise trader places random orders
-        nt_result = self.noise_trader.step(current_mid_price, self.current_time)
-        for order_id in nt_result["cancels"]:
-            self.lob.cancel_order(order_id)
-        for order in nt_result["new_orders"]:
-            self.lob.add_order(order)
+        nt_result = self.noise_trader.step(current_micro_price, self.current_time)
+        for order_id in nt_result["cancels"]: self.lob.cancel_order(order_id)
+        for order in nt_result["new_orders"]: self.lob.add_order(order)
         
-        # Re-compute mid-price after background activity
+        # Re-compute Micro-Price after background activity updates the LOB
         bid_price, bid_qty, ask_price, ask_qty = self.lob.get_best_bid_ask()
-        if bid_price is None:
-            bid_price = self.initial_mid_price - 1.0
-        if ask_price is None:
-            ask_price = self.initial_mid_price + 1.0
-        current_mid_price = (bid_price + ask_price) / 2.0
+        if bid_price is None: bid_price, bid_qty = self.initial_mid_price - 1.0, 0
+        if ask_price is None: ask_price, ask_qty = self.initial_mid_price + 1.0, 0
         
-# ========== PHASE 2: LLM AGENT ACTION ==========
-        step_trades: list[Trade] = []  # Trades executed in this step
-        step_reward: float = 0.0       # Slippage penalty for this step
+        current_micro_price = self._calculate_micro_price(bid_price, bid_qty, ask_price, ask_qty)
+        self.price_history.append(current_micro_price)
         
-        # 1. FAT FINGER PROTECTION: Bound the requested shares by remaining inventory
+        # ========== PHASE 2: LLM AGENT ACTION ==========
+        step_trades: list[Trade] = []
+        step_reward: float = 0.0
+        
+        # FAT FINGER PROTECTION: Bound the requested shares by remaining inventory
         actual_shares = min(action.shares_to_execute, self.inventory_remaining)
         
         if actual_shares > 0:
+            # Safely calculate the spread (min 1 cent to avoid division/zero errors)
+            spread = max(0.01, ask_price - bid_price)
+            
             # Determine execution price based on style
             if action.execution_style == "AGGRESSIVE":
-                # Market order: cross spread to guarantee immediate fill
-                # STRICT ROUNDING applied to prevent float fragmentation
+                # Almgren-Chriss Non-Linear Market Impact Model
                 if action.side == "BUY":
-                    execution_price = round(ask_price + 0.50, 2) # Sweep up to 50 cents
+                    impact = spread * math.sqrt(actual_shares / max(1.0, float(ask_qty)))
+                    execution_price = round(ask_price + impact, 2)
                 else:  # SELL
-                    execution_price = round(bid_price - 0.50, 2)
+                    impact = spread * math.sqrt(actual_shares / max(1.0, float(bid_qty)))
+                    execution_price = round(bid_price - impact, 2)
             else:  # "PASSIVE"
-                # Limit order: place at best price without aggressive move
+                # Join the queue at best price
                 if action.side == "BUY":
                     execution_price = round(bid_price, 2)
                 else:  # SELL
@@ -228,7 +185,7 @@ class LOBEnv:
                 order_id=agent_order_id,
                 side=action.side,
                 price=execution_price,
-                quantity=actual_shares, # Use bounded shares here!
+                quantity=actual_shares,
                 timestamp=self.current_time,
                 agent_id="LLM-AGENT"
             )
@@ -239,7 +196,6 @@ class LOBEnv:
             self.agent_trades.extend(trades_executed)
             
             # PHASE 3: UPDATE INVENTORY
-            # Only count trades where LLM was the buyer/seller
             executed_shares = sum(
                 t.quantity for t in trades_executed
                 if (action.side == "BUY" and t.buyer_id == "LLM-AGENT") or
@@ -248,17 +204,14 @@ class LOBEnv:
             self.inventory_remaining -= executed_shares
             self.inventory_remaining = max(0, self.inventory_remaining)
             
-            # PHASE 4: CALCULATE REWARD (slippage penalty)
-            # Slippage = how much worse than mid-price did agent execute?
-            benchmark_price = current_mid_price  # Step-local benchmark
+            # PHASE 4: CALCULATE REWARD (Slippage vs. Micro-Price Benchmark)
+            benchmark_price = current_micro_price 
             for trade in step_trades:
                 if action.side == "BUY":
-                    # Paid more than mid is bad
                     slippage = trade.price - benchmark_price
                 else:  # SELL
-                    # Received less than mid is bad
                     slippage = benchmark_price - trade.price
-                step_reward -= slippage * trade.quantity  # Negative = penalty
+                step_reward -= slippage * trade.quantity 
         
         # ========== TERMINATION LOGIC ==========
         done: bool = (
@@ -276,17 +229,21 @@ class LOBEnv:
         
         # If episode is done, calculate final score
         if done:
-            twap_benchmark = calculate_twap(
-                self.episode_start_price,
-                self.episode_end_price
-            )
+            self.episode_end_price = current_micro_price
+            continuous_twap = calculate_continuous_twap(self.price_history)
+            
             final_score = calculate_score(
-                self.agent_trades,
-                self.target_shares,
-                twap_benchmark
+                agent_trades=self.agent_trades,
+                total_target_shares=self.target_shares,
+                arrival_price=self.episode_start_price,
+                continuous_twap=continuous_twap,
+                steps_taken=self.step_count,
+                max_steps=self.max_steps
             )
+            
             info["final_score"] = final_score
-            info["twap_benchmark"] = twap_benchmark
+            info["twap_benchmark"] = continuous_twap
+            info["arrival_price"] = self.episode_start_price
             info["total_agent_trades"] = len(self.agent_trades)
             info["total_executed_shares"] = sum(t.quantity for t in self.agent_trades)
         
@@ -296,44 +253,23 @@ class LOBEnv:
         return next_state, reward, done, info
     
     def state(self) -> AgentState:
-        """
-        Construct current agent state observation.
-        
-        Returns AgentState with:
-          - time_remaining: steps until episode termination
-          - inventory_remaining: shares left to execute
-          - mid_price: (best_bid + best_ask) / 2
-          - L2 data: top 3 levels of bids/asks with quantities
-        
-        Returns:
-            AgentState observation for agent input to policy
-        
-        Complexity: O(1) if L2 is pre-computed, else O(log N)
-        """
-        # Fetch current market state
+        """Construct current agent state observation."""
         bid_price, bid_qty, ask_price, ask_qty = self.lob.get_best_bid_ask()
         
-        # Handle case where book is empty on one side
-        if bid_price is None:
-            bid_price = self.initial_mid_price - 1.0
-        if ask_price is None:
-            ask_price = self.initial_mid_price + 1.0
+        if bid_price is None: bid_price, bid_qty = self.initial_mid_price - 1.0, 0
+        if ask_price is None: ask_price, ask_qty = self.initial_mid_price + 1.0, 0
         
-        current_mid_price = (bid_price + ask_price) / 2.0
+        current_micro_price = self._calculate_micro_price(bid_price, bid_qty, ask_price, ask_qty)
         
-        # Fetch L2 snapshot (top 3 levels)
         l2_state = self.lob.get_l2_state()
-        
-        # Calculate time remaining
         time_remaining = self.max_steps - self.step_count
         
-        # Construct state object
         state = AgentState(
             time_remaining=time_remaining,
             inventory_remaining=self.inventory_remaining,
-            mid_price=current_mid_price,
-            bids=l2_state["bids"],      # Top 3 bid levels
-            asks=l2_state["asks"]        # Top 3 ask levels
+            mid_price=current_micro_price, # State now feeds true Micro-Price!
+            bids=l2_state["bids"],
+            asks=l2_state["asks"]
         )
         
         return state
